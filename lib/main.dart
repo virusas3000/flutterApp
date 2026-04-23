@@ -6,10 +6,17 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geocoding/geocoding.dart' as geo;
 import 'dart:io';
 
 import 'data/hive_data_store.dart';
+import 'screens/home_screen.dart';
+import 'screens/foodpanda_home_screen.dart';
+import 'screens/services_screen.dart';
+import 'screens/activity_screen.dart';
+import 'screens/browse_services_screen.dart';
+import 'screens/service_detail_screen.dart';
 
 const bool _isWidgetTest = bool.fromEnvironment('FLUTTER_TEST');
 const bool _authDisabled = true;
@@ -22,7 +29,16 @@ const String _appleWebRedirectUri = '';
 enum UserRole { serviceProvider, needsService }
 
 /// Shared list for map chips and first-time “service needed” onboarding.
-const List<String> kServiceNeedCategories = ['髮型屋'];
+const List<String> kServiceNeedCategories = [
+  '叫車',
+  '外賣',
+  '雜貨配送',
+  '家居服務',
+  '美容水療',
+  '包裹速遞',
+  '維修師傅',
+  '醫療保健',
+];
 
 /// Listing details collected from service providers before the main map.
 class ProviderOffering {
@@ -64,6 +80,7 @@ class ProviderListing {
     this.category = '',
     this.title = '',
     this.serviceTitle = '',
+    this.logoUrl = '',
   });
 
   final String serviceDescription;
@@ -77,6 +94,7 @@ class ProviderListing {
   final String category;
   final String title;
   final String serviceTitle;
+  final String logoUrl;
 
   double get lowestProductPrice {
     if (products.isEmpty) return 0;
@@ -97,6 +115,7 @@ class ProviderListing {
     'category': category,
     'title': title,
     'serviceTitle': serviceTitle,
+    'logoUrl': logoUrl,
   };
 
   factory ProviderListing.fromJson(Map<String, dynamic> m) {
@@ -123,6 +142,54 @@ class ProviderListing {
       category: (m['category'] ?? '').toString(),
       title: (m['title'] ?? '').toString(),
       serviceTitle: (m['serviceTitle'] ?? '').toString(),
+      logoUrl: (m['logoUrl'] ?? '').toString(),
+    );
+  }
+}
+
+/// Local notifications helper (iOS + Android).
+class LocalNotificationService {
+  static final _plugin = FlutterLocalNotificationsPlugin();
+  static bool _initialized = false;
+
+  static Future<void> init() async {
+    if (_initialized) return;
+    _initialized = true;
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iOS = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    const settings = InitializationSettings(android: android, iOS: iOS);
+    await _plugin.initialize(settings);
+    // Request iOS permission
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin
+        >()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
+  }
+
+  static Future<void> show({
+    required String title,
+    required String body,
+  }) async {
+    if (!_initialized) await init();
+    const details = NotificationDetails(
+      iOS: DarwinNotificationDetails(),
+      android: AndroidNotificationDetails(
+        'service_requests',
+        '服務請求',
+        importance: Importance.high,
+        priority: Priority.high,
+      ),
+    );
+    await _plugin.show(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      body,
+      details,
     );
   }
 }
@@ -130,6 +197,7 @@ class ProviderListing {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await appDataStore.init();
+  await LocalNotificationService.init();
   runApp(const GoServiceApp());
 }
 
@@ -174,7 +242,7 @@ class StartupScreen extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFF0077B6), Color(0xFF00B4D8)],
+            colors: [GoServiceApp.kHeroDark, GoServiceApp.kHeroGradientEnd],
           ),
         ),
         child: SafeArea(
@@ -191,7 +259,7 @@ class StartupScreen extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(22),
                     child: Image.asset(
-                      'assets/images/app_icon.png',
+                      'assets/images/app-logo.jpeg',
                       width: 96,
                       height: 96,
                       fit: BoxFit.cover,
@@ -210,7 +278,7 @@ class StartupScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '本地服務，一按即達',
+                  'Every service, one platform',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.85),
                     fontSize: 16,
@@ -235,17 +303,44 @@ class StartupScreen extends StatelessWidget {
   }
 }
 
+class _SlideFadeRoute<T> extends PageRouteBuilder<T> {
+  _SlideFadeRoute({required WidgetBuilder builder})
+    : super(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            builder(context),
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 250),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.08),
+              end: Offset.zero,
+            ).animate(curved),
+            child: FadeTransition(opacity: curved, child: child),
+          );
+        },
+      );
+}
+
 class GoServiceApp extends StatelessWidget {
   const GoServiceApp({super.key});
 
-  static const Color kBrand = Color(0xFF00B4D8);
-  static const Color kBrandDark = Color(0xFF0077B6);
-  static const Color kBrandLight = Color(0xFFCAF0F8);
-  static const Color kAccent = Color(0xFFFF6B35);
-  static const Color kBg = Color(0xFFF8F9FA);
+  // Premium dark palette matching Figma design
+  static const Color kBrand = Color(0xFF6C63FF);
+  static const Color kBrandDark = Color(0xFF4A42D4);
+  static const Color kBrandLight = Color(0xFFEDE9FF);
+  static const Color kAccent = Color(0xFF00D4AA);
+  static const Color kBg = Color(0xFFF5F5FA);
   static const Color kSurface = Colors.white;
   static const Color kTextPrimary = Color(0xFF1A1A2E);
   static const Color kTextSecondary = Color(0xFF6B7280);
+  static const Color kHeroDark = Color(0xFF1A1A2E);
+  static const Color kHeroGradientEnd = Color(0xFF2D2B55);
 
   @override
   Widget build(BuildContext context) {
@@ -587,6 +682,12 @@ class _AppShellState extends State<AppShell> {
   }
 
   bool _showPostSuccess = false;
+  bool _editingListing = false;
+
+  void _onEditListing() {
+    setState(() => _editingListing = true);
+  }
+
   void _onProviderListingSaved(ProviderListing listing) async {
     setState(() {
       _providerListing = listing;
@@ -652,39 +753,52 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
+  void _showRequestSuccessAnimation(
+    BuildContext ctx,
+    ProviderMarker provider,
+    ServiceRequestDraft request,
+  ) {
+    showGeneralDialog(
+      context: ctx,
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 400),
+      pageBuilder: (_, anim, _) {
+        return _RequestSuccessOverlay(
+          providerName: provider.providerName,
+          serviceType: request.serviceType,
+          animation: anim,
+        );
+      },
+    );
+  }
+
   void _onRequestService(ProviderMarker provider) {
     if (!_authDisabled && !_userLoggedIn) {
       _showUserAuth();
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => RequestDetailsScreen(
-          provider: provider,
-          initialServiceType: _userPrimaryServiceNeed,
-          initialUserName: (_userAccount?['name'] ?? '').toString(),
-          onSubmit: (request) {
-            setState(() {
-              _providerRequests.insert(0, request);
-              _unreadRequestCount++;
-            });
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  '已提交給 ${provider.providerName}：${request.serviceType}',
-                ),
-              ),
-            );
-          },
-        ),
-      ),
+    final request = ServiceRequestDraft(
+      serviceType: _userPrimaryServiceNeed ?? provider.serviceName,
+      preferredTime: '',
+      contactPhone: '',
+      requesterName: (_userAccount?['name'] ?? '用戶').toString(),
     );
+    setState(() {
+      _providerRequests.insert(0, request);
+      _unreadRequestCount++;
+    });
+    LocalNotificationService.show(
+      title: '新服務請求',
+      body: '${request.requesterName} 要求了 ${request.serviceType}',
+    );
+    _showRequestSuccessAnimation(context, provider, request);
   }
 
   Future<void> _showUserAuth() async {
     if (_authDisabled) return;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      _SlideFadeRoute<void>(
         builder: (_) => AuthScreen(
           title: '需要一般用戶帳號',
           subtitle: '要求服務前請先登入或註冊',
@@ -778,16 +892,26 @@ class _AppShellState extends State<AppShell> {
       }
     }
 
-    if (_role == UserRole.serviceProvider && _providerListing == null) {
+    if (_role == UserRole.serviceProvider &&
+        (_providerListing == null || _editingListing)) {
       if (_showPostSuccess) {
         return const PostSuccessScreen();
       }
       return ProviderSetupScreen(
-        onBack: _resetRole,
-        onComplete: _onProviderListingSaved,
+        onBack: () {
+          if (_editingListing && _providerListing != null) {
+            setState(() => _editingListing = false);
+          } else {
+            _resetRole();
+          }
+        },
+        onComplete: (listing) {
+          setState(() => _editingListing = false);
+          _onProviderListingSaved(listing);
+        },
+        initialListing: _editingListing ? _providerListing : null,
       );
     }
-
 
     if (_role == UserRole.needsService &&
         (_userPrimaryServiceNeed == null || _userPrimaryServiceNeed!.isEmpty)) {
@@ -797,83 +921,109 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
-    final pages = [
-      MapExploreScreen(
-        role: _role!,
-        myListing: _providerListing,
-        myListingItems: _providerMenuItemsFor(
-          ProviderMarker(
-            latitude: _providerListing?.latitude ?? 0,
-            longitude: _providerListing?.longitude ?? 0,
-            eta: '15 min',
-            icon: Icons.storefront_rounded,
-            color: GoServiceApp.kBrandDark,
-            serviceName: ((_providerListing?.category ?? '').trim().isNotEmpty)
-                ? _providerListing!.category
-                : ((_providerListing?.serviceDescription ?? '').trim().isEmpty)
-                ? '你的服務'
-                : (_providerListing!.serviceDescription
-                      .split('\n')
-                      .first
-                      .trim()),
-            providerName: (_providerListing?.title.isNotEmpty == true
-                ? _providerListing!.title
-                : (_providerAccount?['name'] ?? '你的店舖').toString()),
-            description: _providerListing?.serviceDescription ?? '',
-            startingPrice: _providerListing?.lowestProductPrice ?? 0,
-            rating: 5,
-            address: _providerListing?.address ?? '',
-          ),
-          _providerListing,
-        ),
-        myListingProviderName: (_providerListing?.title.isNotEmpty == true
-            ? _providerListing!.title
-            : (_providerAccount?['name'] ?? '你的店舖').toString()),
-        isUserLoggedIn: _userLoggedIn,
-        initialSearchQuery: _role == UserRole.needsService
-            ? (_userPrimaryServiceNeed ?? '')
-            : '',
-        nearbyProviders: [
-          ...DemoData.providers,
-          if (_providerListing != null)
-            ProviderMarker(
-              latitude: _providerListing!.latitude,
-              longitude: _providerListing!.longitude,
-              eta: '15 min',
-              icon: Icons.storefront_rounded,
-              color: GoServiceApp.kBrandDark,
-              serviceName: _providerListing!.category.isNotEmpty
-                  ? _providerListing!.category
-                  : _providerListing!.serviceDescription
-                        .split('\n')
-                        .first
-                        .trim()
-                        .isEmpty
-                  ? '你的服務'
-                  : _providerListing!.serviceDescription
-                        .split('\n')
-                        .first
-                        .trim(),
-              providerName: (_providerListing?.title.isNotEmpty == true
-                  ? _providerListing!.title
-                  : (_providerAccount?['name'] ?? '你的店舖').toString()),
-              description: _providerListing!.serviceDescription,
-              startingPrice: _providerListing!.lowestProductPrice,
-              rating: 5,
-              address: _providerListing!.address,
-            ),
-        ],
-        onOpenProvider: _onOpenProvider,
-        onRequestService: _onRequestService,
-        onRequireUserAuth: _showUserAuth,
+    final account = _role == UserRole.serviceProvider
+        ? _providerAccount
+        : _userAccount;
+    final userName = (account?['name'] ?? 'JD').toString();
+
+    final pages = <Widget>[
+      HomeScreen(
+        userName: userName,
+        onQuickAction: (category) async {
+          await _onUserPrimaryServiceNeedChosen(category);
+          if (!mounted) return;
+          setState(() => _tabIndex = 1);
+        },
+        onSeeAllServices: () => setState(() => _tabIndex = 1),
       ),
-      if (_role == UserRole.serviceProvider)
-        ProviderRequestsScreen(
-          requests: _providerRequests,
-          onClearUnread: () {
-            setState(() => _unreadRequestCount = 0);
-          },
-        ),
+      ServicesScreen(
+        onCategoryTap: (category) async {
+          if (category.isNotEmpty) {
+            await _onUserPrimaryServiceNeedChosen(category);
+          }
+          // Navigate to browse services
+          if (!mounted) return;
+          Navigator.of(context).push(
+            _SlideFadeRoute<void>(
+              builder: (_) => BrowseServicesScreen(
+                initialSearchQuery: category,
+                providers: [
+                  ...DemoData.providers,
+                  if (_providerListing != null)
+                    ProviderMarker(
+                      latitude: _providerListing!.latitude,
+                      longitude: _providerListing!.longitude,
+                      icon: Icons.storefront_rounded,
+                      color: GoServiceApp.kBrandDark,
+                      serviceName: _providerListing!.category.isNotEmpty
+                          ? _providerListing!.category
+                          : _providerListing!.serviceDescription
+                                .split('\n')
+                                .first
+                                .trim()
+                                .isEmpty
+                          ? '你的服務'
+                          : _providerListing!.serviceDescription
+                                .split('\n')
+                                .first
+                                .trim(),
+                      providerName: (_providerListing?.title.isNotEmpty == true
+                          ? _providerListing!.title
+                          : (_providerAccount?['name'] ?? '你的店舖').toString()),
+                      description: _providerListing!.serviceDescription,
+                      startingPrice: _providerListing!.lowestProductPrice,
+                      rating: 5,
+                      address: _providerListing!.address,
+                      logoUrl: _providerListing!.logoUrl,
+                    ),
+                ],
+                onOpenProvider: (provider) {
+                  _onOpenProvider(provider);
+                  Navigator.of(context).push(
+                    _SlideFadeRoute<void>(
+                      builder: (_) => ServiceDetailScreen(
+                        provider: provider,
+                        customItems: _providerMenuItemsFor(
+                          provider,
+                          _providerListing,
+                        ),
+                        onRequest: () => _onRequestService(provider),
+                      ),
+                    ),
+                  );
+                },
+                onRequestService: _onRequestService,
+              ),
+            ),
+          );
+        },
+        onProviderTap: (name) {
+          // Find provider and open
+          for (final p in DemoData.providers) {
+            if (p.providerName == name) {
+              _onOpenProvider(p);
+              Navigator.of(context).push(
+                _SlideFadeRoute<void>(
+                  builder: (_) => ServiceDetailScreen(
+                    provider: p,
+                    customItems: _providerMenuItemsFor(p, _providerListing),
+                    onRequest: () => _onRequestService(p),
+                  ),
+                ),
+              );
+              break;
+            }
+          }
+        },
+      ),
+      _role == UserRole.serviceProvider
+          ? ProviderRequestsScreen(
+              requests: _providerRequests,
+              onClearUnread: () {
+                setState(() => _unreadRequestCount = 0);
+              },
+            )
+          : ActivityScreen(requests: _providerRequests),
       AccountScreen(
         role: _role!,
         providerListing: _providerListing,
@@ -882,34 +1032,70 @@ class _AppShellState extends State<AppShell> {
         userAccount: _userAccount,
         onLogout: _logoutCurrentRole,
         onSwitchRole: _resetRole,
+        onEditListing: _onEditListing,
       ),
     ];
 
     return Scaffold(
-      body: IndexedStack(index: _tabIndex, children: pages),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 250),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: KeyedSubtree(
+          key: ValueKey<int>(_tabIndex),
+          child: pages[_tabIndex],
+        ),
+      ),
+      // Floating Action Button
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          // Navigate to post requirement / request service
+          _onRequestService(
+            DemoData.providers.isNotEmpty
+                ? DemoData.providers.first
+                : ProviderMarker(
+                    latitude: 22.3193,
+                    longitude: 114.1694,
+                    icon: Icons.storefront_rounded,
+                    color: GoServiceApp.kBrandDark,
+                    serviceName: '服務',
+                    providerName: 'Provider',
+                    description: '',
+                    startingPrice: 0,
+                    rating: 5,
+                  ),
+          );
+        },
+        backgroundColor: const Color(0xFF6366F1),
+        child: const Icon(Icons.add, color: Colors.white, size: 28),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
         onDestinationSelected: (i) => setState(() => _tabIndex = i),
         destinations: [
           const NavigationDestination(
-            icon: Icon(Icons.explore_outlined),
-            selectedIcon: Icon(Icons.explore_rounded),
-            label: '探索',
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home_rounded),
+            label: '首頁',
           ),
-          if (_role == UserRole.serviceProvider)
-            NavigationDestination(
-              icon: Badge(
-                isLabelVisible: _unreadRequestCount > 0,
-                label: Text('$_unreadRequestCount'),
-                child: const Icon(Icons.inbox_outlined),
-              ),
-              selectedIcon: Badge(
-                isLabelVisible: _unreadRequestCount > 0,
-                label: Text('$_unreadRequestCount'),
-                child: const Icon(Icons.inbox_rounded),
-              ),
-              label: '請求',
+          const NavigationDestination(
+            icon: Icon(Icons.grid_view_outlined),
+            selectedIcon: Icon(Icons.grid_view_rounded),
+            label: '服務',
+          ),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: _unreadRequestCount > 0,
+              label: Text('$_unreadRequestCount'),
+              child: const Icon(Icons.access_time_outlined),
             ),
+            selectedIcon: Badge(
+              isLabelVisible: _unreadRequestCount > 0,
+              label: Text('$_unreadRequestCount'),
+              child: const Icon(Icons.access_time_filled),
+            ),
+            label: '活動',
+          ),
           const NavigationDestination(
             icon: Icon(Icons.person_outline_rounded),
             selectedIcon: Icon(Icons.person_rounded),
@@ -921,28 +1107,82 @@ class _AppShellState extends State<AppShell> {
   }
 }
 
-class PostSuccessScreen extends StatelessWidget {
+class PostSuccessScreen extends StatefulWidget {
   const PostSuccessScreen({super.key});
 
   @override
+  State<PostSuccessScreen> createState() => _PostSuccessScreenState();
+}
+
+class _PostSuccessScreenState extends State<PostSuccessScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _scale = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFF0077B6),
+    return Scaffold(
+      backgroundColor: const Color(0xFF0077B6),
       body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.check_circle_rounded, color: Colors.white, size: 72),
-            SizedBox(height: 20),
-            Text(
-              '發佈成功！',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
+        child: FadeTransition(
+          opacity: _fade,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ScaleTransition(
+                scale: _scale,
+                child: Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 56,
+                  ),
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 28),
+              const Text(
+                '發佈成功！',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '你的服務已上線',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.8),
+                  fontSize: 15,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -954,10 +1194,12 @@ class ProviderSetupScreen extends StatefulWidget {
     super.key,
     required this.onBack,
     required this.onComplete,
+    this.initialListing,
   });
 
   final VoidCallback onBack;
   final ValueChanged<ProviderListing> onComplete;
+  final ProviderListing? initialListing;
 
   @override
   State<ProviderSetupScreen> createState() => _ProviderSetupScreenState();
@@ -965,7 +1207,7 @@ class ProviderSetupScreen extends StatefulWidget {
 
 class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
   static const LatLng _defaultPin = LatLng(22.3193, 114.1694);
-  static const _stepTitles = ['店舖名稱', '服務類別', '服務詳情', '背景照片', '服務項目'];
+  static const _stepTitles = ['店舖名稱', '服務類別', '服務詳情', '照片', '服務項目'];
 
   final _imagePicker = ImagePicker();
   final _titleController = TextEditingController();
@@ -974,11 +1216,44 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
   final _addressController = TextEditingController();
   String? _selectedCategory;
 
-  final List<_ProviderOfferingDraft> _offeringDrafts = [
-    _ProviderOfferingDraft(),
-  ];
+  List<_ProviderOfferingDraft> _offeringDrafts = [_ProviderOfferingDraft()];
   String? _backgroundPhotoPath;
+  String? _logoPhotoPath;
+  LatLng _resolvedPin = _defaultPin;
+  bool _geocoding = false;
   int _currentStep = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    final listing = widget.initialListing;
+    if (listing != null) {
+      _titleController.text = listing.title;
+      _serviceTitleController.text = listing.serviceTitle;
+      _serviceController.text = listing.serviceDescription;
+      _addressController.text = listing.address;
+      _selectedCategory = listing.category.isNotEmpty ? listing.category : null;
+      _backgroundPhotoPath = listing.backgroundPhotoUrl.isNotEmpty
+          ? listing.backgroundPhotoUrl
+          : null;
+      _logoPhotoPath = listing.logoUrl.isNotEmpty ? listing.logoUrl : null;
+      _resolvedPin = LatLng(listing.latitude, listing.longitude);
+      if (listing.products.isNotEmpty) {
+        for (final d in _offeringDrafts) {
+          d.dispose();
+        }
+        _offeringDrafts = listing.products
+            .map(
+              (p) => _ProviderOfferingDraft(
+                title: p.title,
+                subtitle: p.subtitle,
+                price: p.priceHkd.toString(),
+              ),
+            )
+            .toList();
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -1086,10 +1361,11 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
         address: _addressController.text.trim(),
         backgroundPhotoUrl: _backgroundPhotoPath ?? '',
         products: products,
-        latitude: _defaultPin.latitude,
-        longitude: _defaultPin.longitude,
+        latitude: _resolvedPin.latitude,
+        longitude: _resolvedPin.longitude,
         category: _selectedCategory ?? '',
         title: _titleController.text.trim(),
+        logoUrl: _logoPhotoPath ?? '',
       ),
     );
   }
@@ -1108,6 +1384,55 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('選擇背景照片失敗：$e')));
+    }
+  }
+
+  Future<void> _pickLogoPhoto() async {
+    try {
+      final file = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 88,
+        maxWidth: 512,
+      );
+      if (!mounted || file == null) return;
+      setState(() => _logoPhotoPath = file.path);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('選擇 Logo 失敗：$e')));
+    }
+  }
+
+  Future<void> _geocodeAddress() async {
+    final address = _addressController.text.trim();
+    if (address.isEmpty) return;
+    setState(() => _geocoding = true);
+    try {
+      final locations = await geo.locationFromAddress(address);
+      if (locations.isNotEmpty && mounted) {
+        setState(() {
+          _resolvedPin = LatLng(
+            locations.first.latitude,
+            locations.first.longitude,
+          );
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已定位：${_resolvedPin.latitude.toStringAsFixed(4)}, ${_resolvedPin.longitude.toStringAsFixed(4)}',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('無法從地址定位：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _geocoding = false);
     }
   }
 
@@ -1224,7 +1549,7 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
             ),
             const SizedBox(height: 24),
             DropdownButtonFormField<String>(
-              value: _selectedCategory,
+              initialValue: _selectedCategory,
               decoration: const InputDecoration(
                 labelText: '服務類別',
                 border: OutlineInputBorder(),
@@ -1282,6 +1607,32 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
                 border: OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _geocoding ? null : _geocodeAddress,
+                icon: _geocoding
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.my_location_rounded, size: 18),
+                label: Text(_geocoding ? '定位中…' : '從地址自動定位'),
+              ),
+            ),
+            if (_resolvedPin != _defaultPin)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '📍 ${_resolvedPin.latitude.toStringAsFixed(4)}, ${_resolvedPin.longitude.toStringAsFixed(4)}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: GoServiceApp.kTextSecondary,
+                  ),
+                ),
+              ),
           ],
         );
       case 3:
@@ -1289,17 +1640,82 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              '步驟 4：背景照片',
+              '步驟 4：照片',
               style: Theme.of(
                 context,
               ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             const Text(
-              '上傳店舖背景照片（可選）。',
+              '上傳店舖 Logo 及背景照片（可選）。',
               style: TextStyle(color: GoServiceApp.kTextSecondary),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            // --- LOGO ---
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFFE5E7EB)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    '店舖 Logo',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
+                  const SizedBox(height: 10),
+                  Center(
+                    child: GestureDetector(
+                      onTap: _pickLogoPhoto,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        width: 88,
+                        height: 88,
+                        decoration: BoxDecoration(
+                          color: GoServiceApp.kBrandLight,
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(
+                            color: GoServiceApp.kBrand.withValues(alpha: 0.3),
+                          ),
+                          image:
+                              (_logoPhotoPath != null &&
+                                  _logoPhotoPath!.isNotEmpty &&
+                                  !_isWidgetTest)
+                              ? DecorationImage(
+                                  image: FileImage(File(_logoPhotoPath!)),
+                                  fit: BoxFit.cover,
+                                )
+                              : null,
+                        ),
+                        child:
+                            (_logoPhotoPath == null || _logoPhotoPath!.isEmpty)
+                            ? const Icon(
+                                Icons.add_a_photo_rounded,
+                                color: GoServiceApp.kBrand,
+                                size: 32,
+                              )
+                            : null,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: Text(
+                      _logoPhotoPath == null ? '點擊上傳 Logo' : '點擊重新選擇',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: GoServiceApp.kTextSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // --- BACKGROUND ---
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -1554,66 +1970,74 @@ class RoleSelectionScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: GoServiceApp.kBg,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            children: [
-              const Spacer(flex: 2),
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: GoServiceApp.kBrandLight,
-                  borderRadius: BorderRadius.circular(28),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: Image.asset(
-                    'assets/images/app_icon.png',
-                    width: 72,
-                    height: 72,
-                    fit: BoxFit.cover,
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [GoServiceApp.kHeroDark, GoServiceApp.kHeroGradientEnd],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              children: [
+                const Spacer(flex: 2),
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: GoServiceApp.kBrand.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(28),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(18),
+                    child: Image.asset(
+                      'assets/images/app-logo.jpeg',
+                      width: 72,
+                      height: 72,
+                      fit: BoxFit.cover,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'InterMatch',
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w900,
-                  color: GoServiceApp.kTextPrimary,
-                  letterSpacing: -0.8,
+                const SizedBox(height: 24),
+                const Text(
+                  'InterMatch',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    letterSpacing: -0.8,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '你想如何使用此應用程式？',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: GoServiceApp.kTextSecondary,
-                  fontWeight: FontWeight.w500,
+                const SizedBox(height: 8),
+                Text(
+                  '你想如何使用此應用程式？',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-              const Spacer(),
-              _RoleCard(
-                icon: Icons.search_rounded,
-                title: '我需要服務',
-                subtitle: '搜尋附近服務供應商並預約',
-                color: GoServiceApp.kBrand,
-                onTap: () => onRoleSelected(UserRole.needsService),
-              ),
-              const SizedBox(height: 14),
-              _RoleCard(
-                icon: Icons.storefront_rounded,
-                title: '我是服務提供者',
-                subtitle: '刊登你的服務，接收客戶需求',
-                color: GoServiceApp.kAccent,
-                onTap: () => onRoleSelected(UserRole.serviceProvider),
-              ),
-              const Spacer(flex: 2),
-            ],
+                const Spacer(),
+                _RoleCard(
+                  icon: Icons.search_rounded,
+                  title: '我需要服務',
+                  subtitle: '搜尋附近服務供應商並預約',
+                  color: GoServiceApp.kBrand,
+                  onTap: () => onRoleSelected(UserRole.needsService),
+                ),
+                const SizedBox(height: 14),
+                _RoleCard(
+                  icon: Icons.storefront_rounded,
+                  title: '我是服務提供者',
+                  subtitle: '刊登你的服務，接收客戶需求',
+                  color: GoServiceApp.kAccent,
+                  onTap: () => onRoleSelected(UserRole.serviceProvider),
+                ),
+                const Spacer(flex: 2),
+              ],
+            ),
           ),
         ),
       ),
@@ -1639,7 +2063,7 @@ class _RoleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white,
+      color: Colors.white.withValues(alpha: 0.08),
       borderRadius: BorderRadius.circular(18),
       child: InkWell(
         onTap: onTap,
@@ -1648,7 +2072,7 @@ class _RoleCard extends StatelessWidget {
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
           ),
           child: Row(
             children: [
@@ -1656,7 +2080,7 @@ class _RoleCard extends StatelessWidget {
                 width: 52,
                 height: 52,
                 decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.12),
+                  color: color.withValues(alpha: 0.20),
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Icon(icon, color: color, size: 26),
@@ -1671,7 +2095,7 @@ class _RoleCard extends StatelessWidget {
                       style: const TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w800,
-                        color: GoServiceApp.kTextPrimary,
+                        color: Colors.white,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -1679,7 +2103,7 @@ class _RoleCard extends StatelessWidget {
                       subtitle,
                       style: TextStyle(
                         fontSize: 13,
-                        color: GoServiceApp.kTextSecondary,
+                        color: Colors.white.withValues(alpha: 0.6),
                       ),
                     ),
                   ],
@@ -1714,372 +2138,43 @@ class _ProviderOfferingDraft {
   }
 }
 
-class FoodPandaHomeScreen extends StatefulWidget {
-  const FoodPandaHomeScreen({
-    super.key,
-    required this.onSelectCategory,
-    this.onBack,
+/// Quick action pill in hero section.
+class _QuickPill extends StatelessWidget {
+  const _QuickPill({
+    required this.label,
+    required this.icon,
+    required this.onTap,
   });
-
-  final Future<void> Function(String value) onSelectCategory;
-  final VoidCallback? onBack;
-
-  @override
-  State<FoodPandaHomeScreen> createState() => _FoodPandaHomeScreenState();
-}
-
-class _FoodPandaHomeScreenState extends State<FoodPandaHomeScreen> {
-  final _searchController = TextEditingController();
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _go(String value) async {
-    final v = value.trim();
-    if (v.isEmpty) return;
-    await widget.onSelectCategory(v);
-  }
-
-  static const _categoryIcons = <String, IconData>{
-    '髮型屋': Icons.content_cut_rounded,
-  };
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final topPad = MediaQuery.of(context).padding.top;
-
-    return Scaffold(
-      backgroundColor: GoServiceApp.kBg,
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: Container(
-              padding: EdgeInsets.fromLTRB(20, topPad + 16, 20, 24),
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF0077B6), Color(0xFF00B4D8)],
-                ),
-                borderRadius: BorderRadius.vertical(
-                  bottom: Radius.circular(28),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      if (widget.onBack != null)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 8),
-                          child: GestureDetector(
-                            onTap: widget.onBack,
-                            child: const Icon(
-                              Icons.arrow_back_rounded,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      const Expanded(
-                        child: Text(
-                          'InterMatch',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -0.5,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(
-                          Icons.notifications_none_rounded,
-                          color: Colors.white,
-                          size: 22,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    '今日想搵咩服務？',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  GestureDetector(
-                    onTap: () {
-                      /* search bar is for typing */
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.08),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.search_rounded,
-                            color: GoServiceApp.kTextSecondary,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: _searchController,
-                              textInputAction: TextInputAction.search,
-                              onSubmitted: _go,
-                              decoration: InputDecoration(
-                                hintText: '搜尋髮型屋…',
-                                hintStyle: TextStyle(
-                                  color: GoServiceApp.kTextSecondary.withValues(
-                                    alpha: 0.6,
-                                  ),
-                                  fontWeight: FontWeight.w500,
-                                ),
-                                border: InputBorder.none,
-                                isDense: true,
-                                contentPadding: EdgeInsets.zero,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 16),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ),
-
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
-              child: Row(
-                children: [
-                  Container(
-                    width: 4,
-                    height: 20,
-                    decoration: BoxDecoration(
-                      color: GoServiceApp.kBrand,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const Text(
-                    '熱門分類',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: GoServiceApp.kTextPrimary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: 100,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                itemCount: kServiceNeedCategories.length > 8
-                    ? 8
-                    : kServiceNeedCategories.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 12),
-                itemBuilder: (context, index) {
-                  final name = kServiceNeedCategories[index];
-                  final hue = (index * 40 + 180) % 360;
-                  final color = HSLColor.fromAHSL(
-                    1,
-                    hue.toDouble(),
-                    0.55,
-                    0.50,
-                  ).toColor();
-                  return GestureDetector(
-                    onTap: () => _go(name),
-                    child: SizedBox(
-                      width: 76,
-                      child: Column(
-                        children: [
-                          Container(
-                            width: 56,
-                            height: 56,
-                            decoration: BoxDecoration(
-                              color: color.withValues(alpha: 0.10),
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
-                                color: color.withValues(alpha: 0.20),
-                              ),
-                            ),
-                            child: Icon(
-                              _categoryIcons[name] ?? Icons.category_rounded,
-                              color: color,
-                              size: 26,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: GoServiceApp.kTextPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
-              child: Row(
-                children: [
-                  Container(
-                    width: 4,
-                    height: 20,
-                    decoration: BoxDecoration(
-                      color: GoServiceApp.kAccent,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  const Text(
-                    '所有服務',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: GoServiceApp.kTextPrimary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: 14,
-                crossAxisSpacing: 14,
-                childAspectRatio: 0.85,
-              ),
-              delegate: SliverChildBuilderDelegate((context, index) {
-                final name = kServiceNeedCategories[index];
-                final hue = (index * 32) % 360;
-                final color = HSLColor.fromAHSL(
-                  1,
-                  hue.toDouble(),
-                  0.50,
-                  0.52,
-                ).toColor();
-                return GestureDetector(
-                  onTap: () => _go(name),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xFFE5E7EB)),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.04),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: color.withValues(alpha: 0.08),
-                              borderRadius: const BorderRadius.vertical(
-                                top: Radius.circular(16),
-                              ),
-                            ),
-                            child: Icon(
-                              _categoryIcons[name] ?? Icons.category_rounded,
-                              color: color,
-                              size: 48,
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Text(
-                                  name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w800,
-                                    color: GoServiceApp.kTextPrimary,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '查看附近店家',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: GoServiceApp.kTextSecondary,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }, childCount: kServiceNeedCategories.length),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -2242,218 +2337,6 @@ class ServiceRequestDraft {
   final String contactPhone;
   final String requesterName;
   final DateTime createdAt;
-}
-
-class RequestDetailsScreen extends StatefulWidget {
-  const RequestDetailsScreen({
-    super.key,
-    required this.provider,
-    this.initialServiceType,
-    this.initialUserName,
-    required this.onSubmit,
-  });
-
-  final ProviderMarker provider;
-  final String? initialServiceType;
-  final String? initialUserName;
-  final ValueChanged<ServiceRequestDraft> onSubmit;
-
-  @override
-  State<RequestDetailsScreen> createState() => _RequestDetailsScreenState();
-}
-
-class _RequestDetailsScreenState extends State<RequestDetailsScreen> {
-  late final TextEditingController _serviceTypeController;
-  final _preferredTimeController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _nameController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    final initial = (widget.initialServiceType ?? widget.provider.serviceName)
-        .trim();
-    _serviceTypeController = TextEditingController(text: initial);
-    final userName = (widget.initialUserName ?? '').trim();
-    if (userName.isNotEmpty) {
-      _nameController.text = userName;
-    }
-  }
-
-  @override
-  void dispose() {
-    _serviceTypeController.dispose();
-    _preferredTimeController.dispose();
-    _phoneController.dispose();
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final name = _nameController.text.trim();
-    final serviceType = _serviceTypeController.text.trim();
-    final preferredTime = _preferredTimeController.text.trim();
-    final phone = _phoneController.text.trim();
-
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('請輸入你的名稱')));
-      return;
-    }
-    if (serviceType.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('請輸入服務類型')));
-      return;
-    }
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('請輸入聯絡電話')));
-      return;
-    }
-
-    widget.onSubmit(
-      ServiceRequestDraft(
-        serviceType: serviceType,
-        preferredTime: preferredTime,
-        contactPhone: phone,
-        requesterName: name,
-      ),
-    );
-    Navigator.of(context).pop();
-  }
-
-  Future<void> _pickTime() async {
-    DateTime selectedTime = DateTime.now();
-
-    await showCupertinoModalPopup<void>(
-      context: context,
-      builder: (ctx) => Container(
-        height: 280,
-        padding: const EdgeInsets.only(top: 6),
-        decoration: BoxDecoration(
-          color: CupertinoColors.systemBackground.resolveFrom(ctx),
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                CupertinoButton(
-                  child: const Text('取消'),
-                  onPressed: () => Navigator.of(ctx).pop(),
-                ),
-                CupertinoButton(
-                  child: const Text('確定'),
-                  onPressed: () {
-                    final hh = selectedTime.hour.toString().padLeft(2, '0');
-                    final mm = selectedTime.minute.toString().padLeft(2, '0');
-                    _preferredTimeController.text = '$hh:$mm';
-                    Navigator.of(ctx).pop();
-                  },
-                ),
-              ],
-            ),
-            Expanded(
-              child: CupertinoDatePicker(
-                mode: CupertinoDatePickerMode.time,
-                use24hFormat: true,
-                initialDateTime: DateTime.now(),
-                onDateTimeChanged: (dt) => selectedTime = dt,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final p = widget.provider;
-    return Scaffold(
-      appBar: AppBar(title: const Text('填寫服務需求')),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          children: [
-            Card(
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: p.color.withValues(alpha: 0.12),
-                  child: Icon(p.icon, color: p.color),
-                ),
-                title: Text(p.serviceName),
-                subtitle: Text(p.providerName),
-                trailing: Text(
-                  '\$${p.startingPrice.toStringAsFixed(0)} 起',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: '你的名稱',
-                hintText: '例如：陳先生',
-                border: OutlineInputBorder(),
-              ),
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _serviceTypeController,
-              decoration: const InputDecoration(
-                labelText: '服務類型',
-                border: OutlineInputBorder(),
-              ),
-              textInputAction: TextInputAction.next,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _preferredTimeController,
-              readOnly: true,
-              onTap: _pickTime,
-              decoration: InputDecoration(
-                labelText: '期望時間',
-                hintText: '選擇時間',
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  onPressed: _pickTime,
-                  icon: const Icon(Icons.schedule_rounded),
-                  tooltip: '選擇時間',
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _phoneController,
-              decoration: const InputDecoration(
-                labelText: '聯絡電話',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.phone,
-              textInputAction: TextInputAction.done,
-            ),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                backgroundColor: GoServiceApp.kBrand,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('提交需求'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 class _AuthScreenState extends State<AuthScreen> {
@@ -2729,8 +2612,8 @@ class _MapExploreScreenState extends State<MapExploreScreen> {
                   )
                 : BitmapDescriptor.defaultMarker,
             infoWindow: InfoWindow(
-              title: provider.serviceName,
-              snippet: '${provider.providerName} • ${provider.eta}',
+              title: provider.providerName,
+              snippet: provider.serviceName,
               onTap: () {
                 widget.onOpenProvider(provider);
                 _focusAndHighlight(provider);
@@ -2782,8 +2665,8 @@ class _MapExploreScreenState extends State<MapExploreScreen> {
         provider.latitude == widget.myListing!.latitude &&
         provider.longitude == widget.myListing!.longitude;
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ProviderMenuScreen(
+      _SlideFadeRoute<void>(
+        builder: (_) => ServiceDetailScreen(
           provider: provider,
           customItems: isMyListing ? widget.myListingItems : const [],
           customAddress: isMyListing ? widget.myListing?.address : null,
@@ -2899,9 +2782,22 @@ class _ServiceListSheet extends StatelessWidget {
                         const SizedBox(height: 10),
                     itemBuilder: (context, index) {
                       final p = providers[index];
-                      return _ProviderCard(
-                        provider: p,
-                        onTap: () => onTapProvider(p),
+                      return TweenAnimationBuilder<double>(
+                        key: ValueKey(p.providerName + p.serviceName),
+                        tween: Tween(begin: 0.0, end: 1.0),
+                        duration: Duration(milliseconds: 350 + index * 60),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, child) => Opacity(
+                          opacity: value,
+                          child: Transform.translate(
+                            offset: Offset(0, 20 * (1 - value)),
+                            child: child,
+                          ),
+                        ),
+                        child: _ProviderCard(
+                          provider: p,
+                          onTap: () => onTapProvider(p),
+                        ),
                       );
                     },
                   ),
@@ -2922,34 +2818,39 @@ class _ProviderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(18),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFF0F0F0)),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFF0F0F5)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
           child: Row(
             children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      provider.color.withValues(alpha: 0.18),
-                      provider.color.withValues(alpha: 0.06),
-                    ],
-                  ),
+              // Avatar / Logo
+              if (provider.logoUrl.isNotEmpty)
+                ClipRRect(
                   borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(provider.icon, color: provider.color, size: 26),
-              ),
+                  child: Image.file(
+                    File(provider.logoUrl),
+                    width: 56,
+                    height: 56,
+                    fit: BoxFit.cover,
+                    errorBuilder: (ctx, err, _) => _buildIconAvatar(),
+                  ),
+                )
+              else
+                _buildIconAvatar(),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -2961,11 +2862,11 @@ class _ProviderCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 15,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         color: GoServiceApp.kTextPrimary,
                       ),
                     ),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 2),
                     Text(
                       provider.providerName,
                       style: TextStyle(
@@ -2977,37 +2878,27 @@ class _ProviderCard extends StatelessWidget {
                     const SizedBox(height: 6),
                     Row(
                       children: [
-                        _RatingStars(
-                          rating: provider.rating,
-                          size: 13,
-                          color: const Color(0xFFFFC107),
+                        const Icon(
+                          Icons.star_rounded,
+                          color: Color(0xFFFFC107),
+                          size: 15,
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 3),
                         Text(
                           provider.rating.toStringAsFixed(1),
                           style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
                             color: GoServiceApp.kTextPrimary,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 3,
-                          ),
-                          decoration: BoxDecoration(
-                            color: GoServiceApp.kBrandLight,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            provider.eta,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: GoServiceApp.kBrandDark,
-                            ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'HK\$${provider.startingPrice.toStringAsFixed(0)}起',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: GoServiceApp.kBrand,
                           ),
                         ),
                       ],
@@ -3015,28 +2906,58 @@ class _ProviderCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    'HK\$${provider.startingPrice.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: GoServiceApp.kTextPrimary,
-                    ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: GoServiceApp.kBrand,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Text(
+                  '預約',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '起',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: GoServiceApp.kTextSecondary,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildIconAvatar() {
+    final initials = provider.providerName.isNotEmpty
+        ? provider.providerName[0].toUpperCase()
+        : provider.serviceName.isNotEmpty
+        ? provider.serviceName[0].toUpperCase()
+        : '?';
+    return Container(
+      width: 56,
+      height: 56,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            provider.color.withValues(alpha: 0.85),
+            provider.color.withValues(alpha: 0.65),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Center(
+        child: Text(
+          initials,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
           ),
         ),
       ),
@@ -3181,14 +3102,33 @@ class ProviderMenuScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
+                        if (p.logoUrl.isNotEmpty)
+                          ClipRRect(
                             borderRadius: BorderRadius.circular(16),
+                            child: Image.file(
+                              File(p.logoUrl),
+                              width: 52,
+                              height: 52,
+                              fit: BoxFit.cover,
+                              errorBuilder: (ctx, err, _) => Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: Icon(p.icon, color: p.color, size: 28),
+                              ),
+                            ),
+                          )
+                        else
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Icon(p.icon, color: p.color, size: 28),
                           ),
-                          child: Icon(p.icon, color: p.color, size: 28),
-                        ),
                         const SizedBox(height: 14),
                         Text(
                           p.providerName,
@@ -3197,15 +3137,6 @@ class ProviderMenuScreen extends StatelessWidget {
                             fontSize: 24,
                             fontWeight: FontWeight.w900,
                             letterSpacing: -0.5,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          p.serviceName,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.9),
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
@@ -3245,10 +3176,6 @@ class ProviderMenuScreen extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      _InfoPill(
-                        icon: Icons.schedule_rounded,
-                        text: '約 ${p.eta}',
-                      ),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -3559,7 +3486,7 @@ class _ProviderRequestsScreenState extends State<ProviderRequestsScreen> {
           : ListView.separated(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               itemCount: widget.requests.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
               itemBuilder: (context, index) {
                 final req = widget.requests[index];
                 final timeAgo = _formatTimeAgo(req.createdAt);
@@ -3688,240 +3615,356 @@ class AccountScreen extends StatelessWidget {
     this.providerProductCount = 0,
     this.providerAccount,
     this.userAccount,
-    required this.onLogout,
-    required this.onSwitchRole,
+    this.onLogout,
+    this.onSwitchRole,
+    this.onEditListing,
   });
 
   final UserRole role;
-  final ProviderListing? providerListing;
+  final dynamic providerListing;
   final int providerProductCount;
   final Map<String, dynamic>? providerAccount;
   final Map<String, dynamic>? userAccount;
-  final Future<void> Function() onLogout;
-  final VoidCallback onSwitchRole;
+  final VoidCallback? onLogout;
+  final VoidCallback? onSwitchRole;
+  final VoidCallback? onEditListing;
 
   @override
   Widget build(BuildContext context) {
-    final roleLabel = role == UserRole.needsService ? '正在尋找服務' : '服務提供者';
     final account = role == UserRole.serviceProvider
         ? providerAccount
         : userAccount;
-    final name = (account?['name'] ?? 'Account').toString();
+    final name = (account?['name'] ?? '').toString();
     final email = (account?['email'] ?? '').toString();
+    final initials = name.length >= 2
+        ? name.substring(0, 2).toUpperCase()
+        : (name.isNotEmpty ? name.toUpperCase() : 'A');
+    final isLoggedIn = account != null && name.isNotEmpty;
 
     return Scaffold(
-      backgroundColor: GoServiceApp.kBg,
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-          children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFFE5E7EB)),
+      backgroundColor: const Color(0xFFF2F2F7),
+      body: CustomScrollView(
+        slivers: [
+          // Header + Profile Card
+          SliverToBoxAdapter(
+            child: Container(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                MediaQuery.of(context).padding.top + 12,
+                16,
+                24,
               ),
-              child: Row(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(bottom: BorderSide(color: Color(0x0D000000))),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [GoServiceApp.kBrand, GoServiceApp.kBrandDark],
-                      ),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: const Icon(
-                      Icons.person_rounded,
-                      color: Colors.white,
-                      size: 28,
+                  const Text(
+                    '帳號',
+                    style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.5,
                     ),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          name,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                            color: GoServiceApp.kTextPrimary,
-                          ),
-                        ),
-                        if (email.isNotEmpty) ...[
-                          const SizedBox(height: 2),
-                          Text(
-                            email,
+                  const SizedBox(height: 16),
+                  if (!isLoggedIn) ...[
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF2F2F7),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Color(0xFFE5E7EB)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '尚未登入',
                             style: TextStyle(
-                              fontSize: 13,
-                              color: GoServiceApp.kTextSecondary,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
                             ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            role == UserRole.serviceProvider
+                                ? '請先登入服務供應商帳號'
+                                : '請先登入用戶帳號',
+                            style: const TextStyle(fontSize: 15),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              ElevatedButton.icon(
+                                onPressed: null,
+                                // TODO: 實作登入流程
+                                icon: const Icon(Icons.login_rounded),
+                                label: const Text('登入'),
+                              ),
+                            ],
                           ),
                         ],
-                        const SizedBox(height: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
+                      ),
+                    ),
+                  ] else ...[
+                    // Profile Card
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFFC69963), Color(0xFFA07855)],
+                        ),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 64,
+                                height: 64,
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                  shape: BoxShape.circle,
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  initials,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    if (email.isNotEmpty) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        email,
+                                        style: TextStyle(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.8,
+                                          ),
+                                          fontSize: 15,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              Icon(
+                                Icons.chevron_right,
+                                color: Colors.white.withValues(alpha: 0.6),
+                                size: 20,
+                              ),
+                            ],
                           ),
-                          decoration: BoxDecoration(
-                            color: GoServiceApp.kBrandLight,
-                            borderRadius: BorderRadius.circular(8),
+                          const SizedBox(height: 16),
+                          // Stats Row
+                          Row(
+                            children: [
+                              _StatBox(label: '訂單', value: '47'),
+                              const SizedBox(width: 12),
+                              _StatBox(label: '評分', value: '4.9'),
+                              const SizedBox(width: 12),
+                              _StatBox(label: '消費', value: '\$580'),
+                            ],
                           ),
-                          child: Text(
-                            roleLabel,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: GoServiceApp.kBrandDark,
-                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          // Menu Sections
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                // Account Section
+                Padding(
+                  padding: const EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text(
+                    '帳號',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF8E8E93),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                _MenuGroup(
+                  items: [
+                    _MenuItem(
+                      icon: Icons.notifications_outlined,
+                      label: '通知',
+                      hasToggle: true,
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 24),
+
+                // Support Section
+                Padding(
+                  padding: const EdgeInsets.only(left: 16, bottom: 8),
+                  child: Text(
+                    '支援',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF8E8E93),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                _MenuGroup(
+                  items: [
+                    _MenuItem(icon: Icons.settings_outlined, label: '設定'),
+                    _MenuItem(
+                      icon: Icons.swap_horiz_rounded,
+                      label: '切換使用身份',
+                      onTap: onSwitchRole,
+                    ),
+                  ],
+                ),
+
+                if (providerListing != null && onEditListing != null) ...[
+                  const SizedBox(height: 24),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16, bottom: 8),
+                    child: Text(
+                      '服務管理',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: const Color(0xFF8E8E93),
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ),
+                  _MenuGroup(
+                    items: [
+                      _MenuItem(
+                        icon: Icons.edit_rounded,
+                        label: '編輯服務刊登',
+                        onTap: onEditListing,
+                      ),
+                    ],
+                  ),
+                ],
+
+                const SizedBox(height: 24),
+
+                // Sign Out
+                GestureDetector(
+                  onTap: onLogout,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.04),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.logout_rounded,
+                          size: 20,
+                          color: Color(0xFFEF4444),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          '登出',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFFEF4444),
                           ),
                         ),
                       ],
                     ),
                   ),
-                ],
+                ),
+
+                const SizedBox(height: 16),
+
+                // Version
+                const Center(
+                  child: Text(
+                    'InterMatch v1.0.0',
+                    style: TextStyle(fontSize: 13, color: Color(0xFF8E8E93)),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatBox extends StatelessWidget {
+  const _StatBox({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Text(
+              value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 24,
+                fontWeight: FontWeight.w800,
               ),
             ),
-            const SizedBox(height: 16),
-            if (providerListing != null) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE5E7EB)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '你的服務刊登',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                        color: GoServiceApp.kTextPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    if (providerListing!.serviceTitle.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Text(
-                          providerListing!.serviceTitle,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14,
-                            color: GoServiceApp.kTextPrimary,
-                          ),
-                        ),
-                      ),
-                    Text(
-                      providerListing!.serviceDescription,
-                      style: TextStyle(color: GoServiceApp.kTextSecondary),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'HK\$${providerListing!.lowestProductPrice.toStringAsFixed(0)} 起',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: GoServiceApp.kTextPrimary,
-                      ),
-                    ),
-                    if (providerListing!.address.trim().isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        providerListing!.address,
-                        style: TextStyle(color: GoServiceApp.kTextSecondary),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    Text(
-                      '已新增 $providerProductCount 個服務項目',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: GoServiceApp.kBrandDark,
-                      ),
-                    ),
-                    if (providerListing!.backgroundPhotoUrl
-                        .trim()
-                        .isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: SizedBox(
-                          height: 120,
-                          width: double.infinity,
-                          child:
-                              (providerListing!.backgroundPhotoUrl.startsWith(
-                                    'http://',
-                                  ) ||
-                                  providerListing!.backgroundPhotoUrl
-                                      .startsWith('https://'))
-                              ? Image.network(
-                                  providerListing!.backgroundPhotoUrl,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) =>
-                                      Container(
-                                        color: const Color(0xFFECEFF1),
-                                        alignment: Alignment.center,
-                                        child: const Text('背景照片無法顯示'),
-                                      ),
-                                )
-                              : _isWidgetTest
-                              ? Container(
-                                  color: const Color(0xFFECEFF1),
-                                  alignment: Alignment.center,
-                                  child: const Text('背景照片'),
-                                )
-                              : Image.file(
-                                  File(providerListing!.backgroundPhotoUrl),
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) =>
-                                      Container(
-                                        color: const Color(0xFFECEFF1),
-                                        alignment: Alignment.center,
-                                        child: const Text('背景照片無法顯示'),
-                                      ),
-                                ),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '已設定服務提供者頁面背景照片',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: GoServiceApp.kTextSecondary,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
-            _AccountMenuTile(
-              icon: Icons.swap_horiz_rounded,
-              title: '切換使用身份',
-              onTap: onSwitchRole,
-            ),
-            const SizedBox(height: 8),
-            const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: onLogout,
-              icon: const Icon(Icons.logout_rounded),
-              label: const Text('登出'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                foregroundColor: const Color(0xFFEF4444),
-                side: const BorderSide(color: Color(0xFFEF4444)),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.8),
+                fontSize: 13,
               ),
             ),
           ],
@@ -3931,56 +3974,131 @@ class AccountScreen extends StatelessWidget {
   }
 }
 
-class _AccountMenuTile extends StatelessWidget {
-  const _AccountMenuTile({
-    required this.icon,
-    required this.title,
-    required this.onTap,
-  });
+class _MenuGroup extends StatelessWidget {
+  const _MenuGroup({required this.items});
 
-  final IconData icon;
-  final String title;
-  final VoidCallback onTap;
+  final List<_MenuItem> items;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          child: Row(
-            children: [
-              Icon(icon, size: 22, color: GoServiceApp.kTextSecondary),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: GoServiceApp.kTextPrimary,
+        ],
+      ),
+      child: Column(
+        children: List.generate(items.length, (i) {
+          final item = items[i];
+          final isLast = i == items.length - 1;
+          return GestureDetector(
+            onTap: item.onTap,
+            behavior: HitTestBehavior.opaque,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                border: isLast
+                    ? null
+                    : const Border(
+                        bottom: BorderSide(color: Color(0x0D000000)),
+                      ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF2F2F7),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      item.icon,
+                      size: 16,
+                      color: const Color(0xFF8E8E93),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      item.label,
+                      style: const TextStyle(fontSize: 17),
+                    ),
+                  ),
+                  if (item.badge != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEF4444),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        item.badge!,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    )
+                  else if (item.hasToggle)
+                    Container(
+                      width: 48,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF007AFF),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.all(2),
+                      child: Container(
+                        width: 24,
+                        height: 24,
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    )
+                  else
+                    const Icon(
+                      Icons.chevron_right,
+                      size: 20,
+                      color: Color(0xFFC7C7CC),
+                    ),
+                ],
               ),
-              Icon(
-                Icons.chevron_right_rounded,
-                size: 20,
-                color: GoServiceApp.kTextSecondary.withValues(alpha: 0.6),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        }),
       ),
     );
   }
+}
+
+class _MenuItem {
+  const _MenuItem({
+    required this.icon,
+    required this.label,
+    this.badge,
+    this.hasToggle = false,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String? badge;
+  final bool hasToggle;
+  final VoidCallback? onTap;
 }
 
 class _ServiceCategoryChips extends StatelessWidget {
@@ -4034,7 +4152,6 @@ class ProviderMarker {
   const ProviderMarker({
     required this.latitude,
     required this.longitude,
-    required this.eta,
     required this.icon,
     required this.color,
     required this.serviceName,
@@ -4043,11 +4160,11 @@ class ProviderMarker {
     required this.startingPrice,
     required this.rating,
     this.address = '',
+    this.logoUrl = '',
   });
 
   final double latitude;
   final double longitude;
-  final String eta;
   final IconData icon;
   final Color color;
   final String serviceName;
@@ -4056,48 +4173,260 @@ class ProviderMarker {
   final double startingPrice;
   final double rating;
   final String address;
+  final String logoUrl;
 }
 
 class DemoData {
   static const providers = <ProviderMarker>[
+    // 叫車
     ProviderMarker(
-      latitude: 22.2800,
-      longitude: 114.1588,
-      eta: '10 min',
-      icon: Icons.content_cut_rounded,
-      color: Color(0xFF8E24AA),
-      serviceName: '髮型屋',
-      providerName: '剪髮研究所',
-      description: '專業剪髮、染髮、燙髮服務，歡迎預約。',
-      startingPrice: 120,
-      rating: 4.8,
-      address: '銅鑼灣駱克道 88 號',
-    ),
-    ProviderMarker(
-      latitude: 22.3170,
+      latitude: 22.3193,
       longitude: 114.1694,
-      eta: '15 min',
-      icon: Icons.content_cut_rounded,
-      color: Color(0xFF5C6BC0),
-      serviceName: '髮型屋',
-      providerName: 'Style Studio',
-      description: '時尚造型、護髮療程，為你打造獨特形象。',
-      startingPrice: 150,
-      rating: 4.5,
-      address: '尖沙咀彌敦道 132 號',
+      icon: Icons.directions_car_rounded,
+      color: Color(0xFF3B82F6),
+      serviceName: '叫車',
+      providerName: 'Premium Rides',
+      description: '豪華轎車接送，專業司機全天候服務',
+      startingPrice: 12,
+      rating: 4.9,
+      address: '香港 九龍',
     ),
     ProviderMarker(
-      latitude: 22.3360,
-      longitude: 114.1870,
-      eta: '20 min',
-      icon: Icons.content_cut_rounded,
-      color: Color(0xFF00897B),
-      serviceName: '髮型屋',
-      providerName: '靚髮軒',
-      description: '男女剪髮、頭皮護理、韓式造型。',
-      startingPrice: 100,
-      rating: 4.3,
-      address: '旺角西洋菜街 56 號',
+      latitude: 22.3300,
+      longitude: 114.1800,
+      icon: Icons.directions_car_rounded,
+      color: Color(0xFF3B82F6),
+      serviceName: '叫車',
+      providerName: 'QuickDrive HK',
+      description: '快速可靠的本地接送服務',
+      startingPrice: 9,
+      rating: 4.7,
+      address: '香港 旺角',
+    ),
+    // 外賣
+    ProviderMarker(
+      latitude: 22.3250,
+      longitude: 114.1650,
+      icon: Icons.restaurant_rounded,
+      color: Color(0xFFEF4444),
+      serviceName: '外賣',
+      providerName: "Chef's Kitchen",
+      description: '精緻私廚料理，新鮮食材每日配送',
+      startingPrice: 25,
+      rating: 4.8,
+      address: '香港 中環',
+    ),
+    ProviderMarker(
+      latitude: 22.3100,
+      longitude: 114.1750,
+      icon: Icons.restaurant_rounded,
+      color: Color(0xFFEF4444),
+      serviceName: '外賣',
+      providerName: 'Tasty Express',
+      description: '30分鐘快速外賣配送',
+      startingPrice: 18,
+      rating: 4.6,
+      address: '香港 尖沙咀',
+    ),
+    // 雜貨配送
+    ProviderMarker(
+      latitude: 22.3350,
+      longitude: 114.1600,
+      icon: Icons.shopping_cart_rounded,
+      color: Color(0xFF22C55E),
+      serviceName: '雜貨配送',
+      providerName: 'Fresh Grocers',
+      description: '新鮮蔬果超市雜貨即日送達',
+      startingPrice: 8,
+      rating: 4.7,
+      address: '香港 沙田',
+    ),
+    // 家居服務
+    ProviderMarker(
+      latitude: 22.3150,
+      longitude: 114.1720,
+      icon: Icons.home_repair_service_rounded,
+      color: Color(0xFF6366F1),
+      serviceName: '家居服務',
+      providerName: 'Sparkle Clean',
+      description: '專業家居清潔，讓您的家光亮如新',
+      startingPrice: 45,
+      rating: 4.9,
+      address: '香港 銅鑼灣',
+    ),
+    ProviderMarker(
+      latitude: 22.3220,
+      longitude: 114.1680,
+      icon: Icons.home_repair_service_rounded,
+      color: Color(0xFF6366F1),
+      serviceName: '家居服務',
+      providerName: '家樂幫手',
+      description: '深層清潔、油漆、搬運一條龍',
+      startingPrice: 55,
+      rating: 4.8,
+      address: '香港 灣仔',
+    ),
+    // 美容水療
+    ProviderMarker(
+      latitude: 22.3180,
+      longitude: 114.1710,
+      icon: Icons.spa_rounded,
+      color: Color(0xFFEC4899),
+      serviceName: '美容水療',
+      providerName: 'Glow Spa',
+      description: '頂級水療護理，讓您煥然一新',
+      startingPrice: 88,
+      rating: 4.9,
+      address: '香港 蘭桂坊',
+    ),
+    // 包裹速遞
+    ProviderMarker(
+      latitude: 22.3260,
+      longitude: 114.1630,
+      icon: Icons.local_shipping_rounded,
+      color: Color(0xFFA855F7),
+      serviceName: '包裹速遞',
+      providerName: 'Swift Delivery',
+      description: '同日速遞，全港覆蓋',
+      startingPrice: 15,
+      rating: 4.7,
+      address: '香港 紅磡',
+    ),
+    // 維修師傅
+    ProviderMarker(
+      latitude: 22.3290,
+      longitude: 114.1770,
+      icon: Icons.build_rounded,
+      color: Color(0xFFEAB308),
+      serviceName: '維修師傅',
+      providerName: '全能師傅',
+      description: '水電維修、冷氣安裝、傢俱組裝',
+      startingPrice: 150,
+      rating: 4.8,
+      address: '香港 土瓜灣',
+    ),
+    // 醫療保健
+    ProviderMarker(
+      latitude: 22.3140,
+      longitude: 114.1690,
+      icon: Icons.medical_services_rounded,
+      color: Color(0xFF14B8A6),
+      serviceName: '醫療保健',
+      providerName: 'Care Health',
+      description: '上門護理、物理治療、健康諮詢',
+      startingPrice: 200,
+      rating: 4.9,
+      address: '香港 太古',
     ),
   ];
+}
+
+class _RequestSuccessOverlay extends StatefulWidget {
+  const _RequestSuccessOverlay({
+    required this.providerName,
+    required this.serviceType,
+    required this.animation,
+  });
+
+  final String providerName;
+  final String serviceType;
+  final Animation<double> animation;
+
+  @override
+  State<_RequestSuccessOverlay> createState() => _RequestSuccessOverlayState();
+}
+
+class _RequestSuccessOverlayState extends State<_RequestSuccessOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _bounceController;
+  late final Animation<double> _bounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _bounceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _bounce = CurvedAnimation(
+      parent: _bounceController,
+      curve: Curves.elasticOut,
+    );
+    _bounceController.forward();
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
+  @override
+  void dispose() {
+    _bounceController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: widget.animation,
+      child: Center(
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 40),
+            padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 28),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.15),
+                  blurRadius: 30,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ScaleTransition(
+                  scale: _bounce,
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: GoServiceApp.kBrand.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_rounded,
+                      color: GoServiceApp.kBrand,
+                      size: 40,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  '已成功提交！',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: GoServiceApp.kTextPrimary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${widget.serviceType} → ${widget.providerName}',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: GoServiceApp.kTextSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
