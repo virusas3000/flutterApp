@@ -8,6 +8,7 @@ import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'dart:io';
+import 'dart:async';
 
 import 'data/hive_data_store.dart';
 
@@ -1730,9 +1731,59 @@ class FoodPandaHomeScreen extends StatefulWidget {
 
 class _FoodPandaHomeScreenState extends State<FoodPandaHomeScreen> {
   final _searchController = TextEditingController();
+  final _promoController = PageController(viewportFraction: 0.92);
+  int _promoIndex = 0;
+  Timer? _promoTimer;
+
+  static const _promos = <_PromoBanner>[
+    _PromoBanner(
+      title: '新用戶優惠',
+      subtitle: '首次預約即享 8 折',
+      tag: 'NEW',
+      colors: [Color(0xFFFF6B35), Color(0xFFF7931E)],
+      icon: Icons.celebration_rounded,
+    ),
+    _PromoBanner(
+      title: '限時推廣',
+      subtitle: '指定髮型屋免費頭皮護理',
+      tag: 'HOT',
+      colors: [Color(0xFF00B4D8), Color(0xFF0077B6)],
+      icon: Icons.local_fire_department_rounded,
+    ),
+    _PromoBanner(
+      title: '推薦朋友',
+      subtitle: '雙方各得 \$50 服務金',
+      tag: 'REFER',
+      colors: [Color(0xFF7C3AED), Color(0xFFDB2777)],
+      icon: Icons.card_giftcard_rounded,
+    ),
+    _PromoBanner(
+      title: '會員專享',
+      subtitle: '每月一次免費修剪',
+      tag: 'VIP',
+      colors: [Color(0xFF059669), Color(0xFF10B981)],
+      icon: Icons.workspace_premium_rounded,
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _promoTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (!mounted || !_promoController.hasClients) return;
+      final next = (_promoIndex + 1) % _promos.length;
+      _promoController.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   @override
   void dispose() {
+    _promoTimer?.cancel();
+    _promoController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -1870,6 +1921,145 @@ class _FoodPandaHomeScreenState extends State<FoodPandaHomeScreen> {
                     ),
                   ),
                 ],
+              ),
+            ),
+          ),
+
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(0, 18, 0, 0),
+              child: SizedBox(
+                height: 130,
+                child: PageView.builder(
+                  controller: _promoController,
+                  itemCount: _promos.length,
+                  onPageChanged: (i) => setState(() => _promoIndex = i),
+                  itemBuilder: (context, i) {
+                    final p = _promos[i];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: GestureDetector(
+                        onTap: () {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('優惠：${p.title}'),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: p.colors,
+                            ),
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: p.colors.last.withValues(alpha: 0.30),
+                                blurRadius: 16,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: Stack(
+                            children: [
+                              Positioned(
+                                right: -10,
+                                bottom: -10,
+                                child: Icon(
+                                  p.icon,
+                                  size: 130,
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.all(18),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            Colors.white.withValues(alpha: 0.25),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        p.tag,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: 0.8,
+                                        ),
+                                      ),
+                                    ),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          p.title,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 20,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          p.subtitle,
+                                          style: TextStyle(
+                                            color: Colors.white
+                                                .withValues(alpha: 0.92),
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(0, 10, 0, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(_promos.length, (i) {
+                  final active = i == _promoIndex;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: active ? 18 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: active
+                          ? GoServiceApp.kBrand
+                          : GoServiceApp.kTextSecondary.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  );
+                }),
               ),
             ),
           ),
@@ -2083,6 +2273,23 @@ class _FoodPandaHomeScreenState extends State<FoodPandaHomeScreen> {
       ),
     );
   }
+}
+
+/// Promo banner data model used by the home-screen carousel.
+class _PromoBanner {
+  const _PromoBanner({
+    required this.title,
+    required this.subtitle,
+    required this.tag,
+    required this.colors,
+    required this.icon,
+  });
+
+  final String title;
+  final String subtitle;
+  final String tag;
+  final List<Color> colors;
+  final IconData icon;
 }
 
 /// One-time prompt for users who need a service: capture the type of service they want.
