@@ -5,6 +5,7 @@ import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'dart:io';
@@ -12,7 +13,7 @@ import 'dart:io';
 import 'data/hive_data_store.dart';
 
 const bool _isWidgetTest = bool.fromEnvironment('FLUTTER_TEST');
-const bool _authDisabled = true;
+const bool _authDisabled = false;
 
 // Web Apple Sign-In requires a Service ID (clientId) + redirect URI.
 // Fill these when you set up Sign in with Apple for Web.
@@ -22,7 +23,17 @@ const String _appleWebRedirectUri = '';
 enum UserRole { serviceProvider, needsService }
 
 /// Shared list for map chips and first-time “service needed” onboarding.
-const List<String> kServiceNeedCategories = ['髮型屋'];
+const List<String> kServiceNeedCategories = [
+  '髮型屋',
+  '美甲店',
+  '按摩',
+  '美容院',
+  '補習',
+  '寵物美容',
+  '維修',
+  '搬屋',
+  '清潔',
+];
 
 /// Listing details collected from service providers before the main map.
 class ProviderOffering {
@@ -586,6 +597,83 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
+  Future<bool> _loginWithGoogle({required bool isProvider}) async {
+    try {
+      final googleSignIn = GoogleSignIn(scopes: const ['email', 'profile']);
+      // Sign out first to allow account picker every time.
+      try {
+        await googleSignIn.signOut();
+      } catch (_) {}
+      final account = await googleSignIn.signIn();
+      if (account == null) {
+        return false; // user cancelled
+      }
+      final auth = await account.authentication;
+      final accountMap = <String, dynamic>{
+        'provider': 'google',
+        'googleUserId': account.id,
+        'name': account.displayName,
+        'email': account.email,
+        'picture': account.photoUrl,
+        'idToken': auth.idToken,
+      };
+
+      if (isProvider) {
+        setState(() {
+          _providerAccount = accountMap;
+          _providerLoggedIn = true;
+        });
+        await appDataStore.saveProviderAccount(accountMap);
+        await appDataStore.saveProviderLoggedIn(true);
+      } else {
+        setState(() {
+          _userAccount = accountMap;
+          _userLoggedIn = true;
+        });
+        await appDataStore.saveUserAccount(accountMap);
+        await appDataStore.saveUserLoggedIn(true);
+      }
+      return true;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Google 登入失敗：$e')));
+      }
+      return false;
+    }
+  }
+
+  Future<bool> _loginWithPhone({required bool isProvider}) async {
+    final result = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(builder: (_) => const PhoneAuthScreen()),
+    );
+    if (result == null) return false;
+
+    final accountMap = <String, dynamic>{
+      'provider': 'phone',
+      'phone': result['phone'],
+      'name': result['phone'],
+    };
+
+    if (isProvider) {
+      setState(() {
+        _providerAccount = accountMap;
+        _providerLoggedIn = true;
+      });
+      await appDataStore.saveProviderAccount(accountMap);
+      await appDataStore.saveProviderLoggedIn(true);
+    } else {
+      setState(() {
+        _userAccount = accountMap;
+        _userLoggedIn = true;
+      });
+      await appDataStore.saveUserAccount(accountMap);
+      await appDataStore.saveUserLoggedIn(true);
+    }
+    return true;
+  }
+
   bool _showPostSuccess = false;
   void _onProviderListingSaved(ProviderListing listing) async {
     setState(() {
@@ -690,22 +778,8 @@ class _AppShellState extends State<AppShell> {
           subtitle: '要求服務前請先登入或註冊',
           onFacebook: () => _loginWithFacebook(isProvider: false),
           onApple: () => _loginWithApple(isProvider: false),
-          onGoogle: () async {
-            if (!mounted) return false;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Google 登入尚未設定（需要 Firebase/Google 配置）。'),
-              ),
-            );
-            return false;
-          },
-          onPhone: () async {
-            if (!mounted) return false;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('電話登入尚未設定（需要 SMS OTP 後端）。')),
-            );
-            return false;
-          },
+          onGoogle: () => _loginWithGoogle(isProvider: false),
+          onPhone: () => _loginWithPhone(isProvider: false),
         ),
       ),
     );
@@ -720,6 +794,11 @@ class _AppShellState extends State<AppShell> {
         : _userAccount;
     if (account?['provider'] == 'facebook') {
       await FacebookAuth.instance.logOut();
+    }
+    if (account?['provider'] == 'google') {
+      try {
+        await GoogleSignIn().signOut();
+      } catch (_) {}
     }
 
     if (role == UserRole.serviceProvider) {
@@ -758,22 +837,8 @@ class _AppShellState extends State<AppShell> {
           onBack: _resetRole,
           onFacebook: () => _loginWithFacebook(isProvider: true),
           onApple: () => _loginWithApple(isProvider: true),
-          onGoogle: () async {
-            if (!mounted) return false;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Google 登入尚未設定（需要 Firebase/Google 配置）。'),
-              ),
-            );
-            return false;
-          },
-          onPhone: () async {
-            if (!mounted) return false;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('電話登入尚未設定（需要 SMS OTP 後端）。')),
-            );
-            return false;
-          },
+          onGoogle: () => _loginWithGoogle(isProvider: true),
+          onPhone: () => _loginWithPhone(isProvider: true),
         );
       }
     }
@@ -1795,16 +1860,29 @@ class _FoodPandaHomeScreenState extends State<FoodPandaHomeScreen> {
                           ),
                         ),
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
                           borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(
-                          Icons.notifications_none_rounded,
-                          color: Colors.white,
-                          size: 22,
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const NotificationsScreen(),
+                              ),
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: const Icon(
+                              Icons.notifications_none_rounded,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -2579,6 +2657,123 @@ class _MapExploreScreenState extends State<MapExploreScreen> {
   late final TextEditingController _searchController;
   String _query = '';
 
+  // Filter sheet state
+  double _filterMaxDistanceKm = 5;
+  double _filterMinRating = 0;
+  RangeValues _filterPriceRange = const RangeValues(0, 1000);
+
+  Future<void> _openFilterSheet() async {
+    double tmpDistance = _filterMaxDistanceKm;
+    double tmpRating = _filterMinRating;
+    RangeValues tmpPrice = _filterPriceRange;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheet) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                16,
+                20,
+                MediaQuery.of(ctx).viewInsets.bottom + 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('篩選條件',
+                      style: TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 16),
+                  Text('最大距離：${tmpDistance.toStringAsFixed(1)} 公里'),
+                  Slider(
+                    value: tmpDistance,
+                    min: 0.5,
+                    max: 20,
+                    divisions: 39,
+                    label: '${tmpDistance.toStringAsFixed(1)} km',
+                    onChanged: (v) => setSheet(() => tmpDistance = v),
+                  ),
+                  const SizedBox(height: 8),
+                  Text('最低評分：${tmpRating.toStringAsFixed(1)} 星'),
+                  Slider(
+                    value: tmpRating,
+                    min: 0,
+                    max: 5,
+                    divisions: 10,
+                    label: tmpRating.toStringAsFixed(1),
+                    onChanged: (v) => setSheet(() => tmpRating = v),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                      '價格範圍：HK\$${tmpPrice.start.toInt()} – HK\$${tmpPrice.end.toInt()}'),
+                  RangeSlider(
+                    values: tmpPrice,
+                    min: 0,
+                    max: 2000,
+                    divisions: 40,
+                    labels: RangeLabels(
+                      'HK\$${tmpPrice.start.toInt()}',
+                      'HK\$${tmpPrice.end.toInt()}',
+                    ),
+                    onChanged: (v) => setSheet(() => tmpPrice = v),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () {
+                            setSheet(() {
+                              tmpDistance = 5;
+                              tmpRating = 0;
+                              tmpPrice = const RangeValues(0, 1000);
+                            });
+                          },
+                          child: const Text('重設'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () {
+                            setState(() {
+                              _filterMaxDistanceKm = tmpDistance;
+                              _filterMinRating = tmpRating;
+                              _filterPriceRange = tmpPrice;
+                            });
+                            Navigator.of(ctx).pop();
+                          },
+                          child: const Text('套用'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2596,6 +2791,13 @@ class _MapExploreScreenState extends State<MapExploreScreen> {
   @override
   Widget build(BuildContext context) {
     final filteredProviders = widget.nearbyProviders.where((provider) {
+      if (provider.rating < _filterMinRating) return false;
+      if (provider.startingPrice < _filterPriceRange.start ||
+          provider.startingPrice > _filterPriceRange.end) {
+        return false;
+      }
+      // _filterMaxDistanceKm is reserved for future geo filtering once a real
+      // user location is available.
       final query = _query.trim().toLowerCase();
       if (query.isEmpty) return true;
       return provider.serviceName.toLowerCase().contains(query) ||
@@ -2668,17 +2870,24 @@ class _MapExploreScreenState extends State<MapExploreScreen> {
                           ),
                         ),
                       ),
-                      Container(
-                        margin: const EdgeInsets.only(right: 6),
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: GoServiceApp.kBrand,
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
                           borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(
-                          Icons.tune_rounded,
-                          color: Colors.white,
-                          size: 20,
+                          onTap: _openFilterSheet,
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 6),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: GoServiceApp.kBrand,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.tune_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -4100,4 +4309,123 @@ class DemoData {
       address: '旺角西洋菜街 56 號',
     ),
   ];
+}
+
+/// Simple notifications screen — placeholder list shown when the bell is tapped.
+class NotificationsScreen extends StatelessWidget {
+  const NotificationsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final items = const [
+      ('新優惠', '本週推出 9 折服務優惠，立即查看！', Icons.local_offer_rounded),
+      ('預約提醒', '你有一個未確認的預約。', Icons.event_available_rounded),
+      ('系統通知', '我們已更新私隱政策。', Icons.info_outline_rounded),
+    ];
+    return Scaffold(
+      appBar: AppBar(title: const Text('通知')),
+      body: ListView.separated(
+        itemCount: items.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, i) {
+          final (title, subtitle, icon) = items[i];
+          return ListTile(
+            leading: CircleAvatar(child: Icon(icon, size: 20)),
+            title: Text(title),
+            subtitle: Text(subtitle),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Phone OTP login stub — collects phone number and a 6-digit code.
+class PhoneAuthScreen extends StatefulWidget {
+  const PhoneAuthScreen({super.key});
+
+  @override
+  State<PhoneAuthScreen> createState() => _PhoneAuthScreenState();
+}
+
+class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
+  final _phoneController = TextEditingController();
+  final _codeController = TextEditingController();
+  bool _codeSent = false;
+
+  @override
+  void dispose() {
+    _phoneController.dispose();
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  void _sendCode() {
+    if (_phoneController.text.trim().length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請輸入有效電話號碼')),
+      );
+      return;
+    }
+    setState(() => _codeSent = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('驗證碼已發送（示範用：任意 6 位數均可通過）')),
+    );
+  }
+
+  void _verify() {
+    if (_codeController.text.trim().length != 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請輸入 6 位數驗證碼')),
+      );
+      return;
+    }
+    Navigator.of(context).pop<Map<String, dynamic>>({
+      'phone': _phoneController.text.trim(),
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('電話登入')),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: '電話號碼',
+                prefixText: '+852 ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (!_codeSent)
+              FilledButton(onPressed: _sendCode, child: const Text('發送驗證碼'))
+            else ...[
+              TextField(
+                controller: _codeController,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                decoration: const InputDecoration(
+                  labelText: '驗證碼',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              FilledButton(onPressed: _verify, child: const Text('驗證並登入')),
+              TextButton(
+                onPressed: () => setState(() => _codeSent = false),
+                child: const Text('重新發送'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
