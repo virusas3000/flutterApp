@@ -19,11 +19,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('熱門分類'), findsOneWidget);
-    expect(find.text('清潔'), findsWidgets);
-    await tester.tap(find.text('清潔').first);
+    expect(find.text('髮型屋'), findsWidgets);
+    await tester.tap(find.text('髮型屋').first);
     await tester.pumpAndSettle();
 
     expect(find.text('附近可用服務'), findsOneWidget);
-    expect(find.text('清潔'), findsWidgets);
+    expect(find.text('髮型屋'), findsWidgets);
   });
 }
